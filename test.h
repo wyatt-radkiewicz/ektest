@@ -4,6 +4,9 @@
 //
 // Try to include test.h last in your test file (but before your tests) so that
 // the keywords defined by test.h wont potentially mess up other headers.
+// I recommend turning on -O2 and maybe debugging symbols even if you are just
+// testing. Tests should have optimizations disabled by default leaving the
+// benchmark functions the only ones with optimizations.
 //
 // Keywords introduced by test.h:
 // - arrlen(a): get length of array
