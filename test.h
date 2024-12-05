@@ -9,21 +9,23 @@
 #include <stdio.h>
 #include <unistd.h>
 #include <fcntl.h>
-#include <errno.h>
+#include <time.h>
+#include <sys/time.h>
+#include <sys/resource.h>
 
 #ifndef test_padding
 #define test_padding 32
 #endif
 #define _test_group(_group, _name) \
-	static test_fn test_##_group##_##_name;\
+	static test_fn test_##_group##_##_name; \
 	\
 	static __attribute__((constructor(__COUNTER__ + 101))) \
 		void _add_test_##_group##_##_name(void) \
 	{ \
-		_tests_add(#_group, (test_t){ \
+		_nodes_add(&_tests, #_group, &(test_t){ \
 			.fn = test_##_group##_##_name, \
 			.name = #_name, \
-		}); \
+		}, sizeof(test_t)); \
 	} \
 	static void test_##_group##_##_name(test_result_t *_out)
 #define _test(_name) _test_group(_, _name)
@@ -50,7 +52,47 @@
 #define tprintf(...) fprintf(_test_realout, __VA_ARGS__)
 #define teprintf(...) fprintf(_test_realerr, __VA_ARGS__)
 
-//#define bench()
+#define _bench_group(_group, _name, _iters) \
+	static __attribute__((constructor(__COUNTER__ + 101))) \
+		void _add_bench_##_group##_##_name(void) { \
+		bench_t *bench = _nodes_add(&_benches, #_group, &(bench_t){ \
+			._setup = NULL, \
+			._cleanup = NULL, \
+			._iter = NULL, \
+			.name = #_name, \
+			.iters = _iters, \
+		}, sizeof(bench_t)); \
+		_bench_setup = &bench->_setup; \
+		_bench_cleanup = &bench->_cleanup; \
+		_bench_iter = &bench->_iter; \
+	}
+#define _bench(_name, _iters) _bench_group(_, _name, _iters)
+#define _pick_bench(_2, _1, _0, _name, ...) _name
+#define bench(...) _pick_bench(__VA_ARGS__, _bench_group, _bench)(__VA_ARGS__)
+#define _test_concat_(_1, _2) _1##_2
+#define _test_concat(_1, _2) _test_concat_(_1, _2)
+#define _append_line(_name) _test_concat(_name, __LINE__)
+#define onsetup \
+	static void _append_line(_bench_setup)(void); \
+	static __attribute__((constructor(__COUNTER__ + 101))) \
+		void _append_line(_bench_set_setup)(void) { \
+		*_bench_setup = _append_line(_bench_setup);\
+	} \
+	static void _append_line(_bench_setup)(void)
+#define oncleanup \
+	static void _append_line(_bench_cleanup)(void); \
+	static __attribute__((constructor(__COUNTER__ + 101))) \
+		void _append_line(_bench_set_cleanup)(void) { \
+		*_bench_cleanup = _append_line(_bench_cleanup);\
+	} \
+	static void _append_line(_bench_cleanup)(void)
+#define oniter \
+	static void _append_line(_bench_iter)(void); \
+	static __attribute__((constructor(__COUNTER__ + 101))) \
+		void _append_line(_bench_set_iter)(void) { \
+		*_bench_iter = _append_line(_bench_iter);\
+	} \
+	static void _append_line(_bench_iter)(void)
 
 typedef struct test_result {
 	char msg[4096];
@@ -64,69 +106,90 @@ typedef struct test {
 	const char *name;
 } test_t;
 
-typedef struct test_group {
+typedef struct group {
 	const char *name;
-	test_t *tests;
-	size_t len;
-	size_t capacity;
-} test_group_t;
+	void *nodes;
+	size_t len, capacity;
+} group_t;
 
-typedef struct tests {
-	test_group_t *groups;
-	size_t len;
-	size_t capacity;
-} tests_t;
+#define group_foreach(_group, _type, _name) \
+	for (_type *_name = (_group)->nodes; \
+		_name != ((_type *)(_group)->nodes) + (_group)->len; \
+		_name++)
 
-static tests_t _tests;
+typedef struct nodes {
+	group_t *groups;
+	size_t len;
+	size_t nodesz;
+	size_t capacity;
+} nodes_t;
+
+typedef void (bench_fn)(void);
+
+typedef struct bench {
+	const char *name;
+	bench_fn *_setup, *_cleanup, *_iter;
+	size_t iters;
+} bench_t;
+
+static nodes_t _tests, _benches;
+static bench_fn **_bench_setup;
+static bench_fn **_bench_cleanup;
+static bench_fn **_bench_iter;
 static FILE *_test_stdout, *_test_stderr, *_test_realout, *_test_realerr;
-static bool _test_silent, _test_silent_err;
+static bool _test_silent, _test_silent_err, _bench_disable;
 
-static void _tests_add(const char *name, test_t test) {
-	test_group_t *group;
+static void *_nodes_add(nodes_t *nodes, const char *name,
+			void *node, size_t nodesz) {
+	group_t *group;
 
-	for (size_t i = 0; i < _tests.len; i++) {
-		if (strcmp(name, _tests.groups[i].name) == 0) {
-			group = _tests.groups + i;
+	for (size_t i = 0; i < nodes->len; i++) {
+		if (strcmp(name, nodes->groups[i].name) == 0) {
+			group = nodes->groups + i;
 			goto add;
 		}
 	}
 	
-	if (!_tests.capacity) {
+	if (!nodes->capacity) {
 		// Initialize the tests collection
-		_tests.capacity = 8;
-		_tests.groups = malloc(sizeof(*_tests.groups)
-				* _tests.capacity);
-		_tests.len = 0;
+		*nodes = (nodes_t){
+			.capacity = 8,
+			.groups = malloc(sizeof(*nodes->groups) * 8),
+			.nodesz = nodesz,
+			.len = 0,
+		};
 	}
 
 	// Add the group
-	if (_tests.len >= _tests.capacity) {
-		_tests.capacity *= 2;
-		_tests.groups = realloc(_tests.groups,
-			sizeof(*_tests.groups) * _tests.capacity);
+	if (nodes->len >= nodes->capacity) {
+		nodes->capacity *= 2;
+		nodes->groups = realloc(nodes->groups,
+			sizeof(*nodes->groups) * nodes->capacity);
 	}
-	_tests.groups[_tests.len] = (test_group_t){
+	nodes->groups[nodes->len] = (group_t){
 		.name = name,
 		.len = 0,
 		.capacity = 8,
-		.tests = malloc(sizeof(test_t) * 8),
+		.nodes = malloc(nodes->nodesz * 8),
 	};
-	group = _tests.groups + _tests.len++;
+	group = nodes->groups + nodes->len++;
 
 add:
 	if (group->len >= group->capacity) {
 		group->capacity *= 2;
-		group->tests = realloc(group->tests,
-			sizeof(*group->tests) * group->capacity);
+		group->nodes = realloc(group->nodes,
+			nodes->nodesz * group->capacity);
 	}
-	group->tests[group->len++] = test;
+	memcpy((void *)((uintptr_t)group->nodes + group->len * nodes->nodesz),
+		node, nodesz);
+	return (void *)((uintptr_t)group->nodes + group->len++ * nodes->nodesz);
 }
 
-static void _tests_free(void) {
-	for (size_t i = 0; i < _tests.len; i++) {
-		free(_tests.groups[i].tests);
+static void _nodes_free(nodes_t *nodes) {
+	for (size_t i = 0; i < nodes->len; i++) {
+		free(nodes->groups[i].nodes);
 	}
-	free(_tests.groups);
+	free(nodes->groups);
 }
 
 static void _print_padded(int to, const char *str, ...) {
@@ -199,50 +262,139 @@ static void _redirect_stdout(void) {
 	_test_stderr = fdopen(pipe_fd[0], "r");
 }
 
+static void _restore_stdout(void) {
+	dup2(fileno(_test_realout), STDOUT_FILENO);
+	fclose(_test_stdout);
+	fclose(_test_realout);
+	dup2(fileno(_test_realerr), STDERR_FILENO);
+	fclose(_test_stderr);
+	fclose(_test_realerr);
+}
+
+static void _run_test_group(group_t *group, bool run_unnamed,
+			size_t *total_passed, size_t *total_ran) {
+	const char *name = strcmp(group->name, "_") == 0
+		? "" : group->name;
+	size_t npassed = 0;
+
+	if (run_unnamed && name[0] != '\0') return;
+	if (!run_unnamed && name[0] == '\0') return;
+	if (!run_unnamed) {
+		tprintf("%s (%zu test%s)\n", name, group->len,
+			group->len > 1 ? "s" : "");
+	}
+
+	group_foreach(group, test_t, j) {
+		npassed += _run_test(j);
+	}
+
+	*total_passed += npassed, *total_ran += group->len;
+	_print_results(name, npassed, group->len);
+}
+
 static bool _run_tests(void) {
 	struct { size_t npassed, nran; } total = {0};
 
 	_redirect_stdout();
-
-	for (size_t i = 0; i < _tests.len; i++) {
-		test_group_t *group = _tests.groups + i;
-		const char *name = strcmp(group->name, "_") == 0
-			? "" : group->name;
-		size_t npassed = 0;
-
+	tprintf("tests:\n");
+	for (size_t i = 1; i < 2; i--) {
+		for (size_t j = 0; j < _tests.len; j++) {
+			_run_test_group(_tests.groups + j, i,
+					&total.npassed, &total.nran);
+		}
 		tprintf("\n");
-		if (name[0] == '\0') {
-			tprintf("%zu tests\n", group->len);
-		} else {
-			tprintf("%s (%zu tests)\n", name, group->len);
-		}
-
-		for (size_t j = 0; j < group->len; j++) {
-			npassed += _run_test(group->tests + j);
-		}
-
-		total.npassed += npassed, total.nran += group->len;
-		_print_results(name, npassed, group->len);
 	}
 
-	tprintf("\n\n");
-	_print_results("test", total.npassed, total.nran);
-	_tests_free();
-	fclose(stdout);
-	fclose(_test_stdout);
-	fclose(_test_realout);
-	fclose(stderr);
-	fclose(_test_stderr);
-	fclose(_test_realerr);
+	if (_tests.len > 1) _print_results("test", total.npassed, total.nran);
+	_nodes_free(&_tests);
 	return total.npassed == total.nran;
+}
+
+typedef struct bench_results {
+	double user, sys;
+} bench_results_t;
+
+bench_results_t _run_bench(bench_t *bench) {
+	if (bench->_setup) bench->_setup();
+	struct rusage start, end;
+	getrusage(RUSAGE_SELF, &start);
+	for (size_t i = 0; i < bench->iters; i++) bench->_iter();
+	getrusage(RUSAGE_SELF, &end);
+	if (bench->_cleanup) bench->_cleanup();
+	bench_results_t res = {
+		.user = (double)(end.ru_utime.tv_sec - start.ru_utime.tv_sec),
+		.sys = (double)(end.ru_stime.tv_sec - start.ru_stime.tv_sec)
+	};
+	res.user += (double)(end.ru_utime.tv_usec - start.ru_utime.tv_usec)
+		/ (double)1000000.0;
+	res.sys += (double)(end.ru_stime.tv_usec - start.ru_stime.tv_usec)
+		/ (double)1000000.0;
+	return res;
+}
+
+static void _print_time(const char *msg, double secs) {
+	tprintf("%s", msg);
+	if (secs >= 1000.0) tprintf("% 8fms", secs * 1000.0);
+	else tprintf("% 8fus", secs * 1000000.0);
+}
+
+static void _run_benches(void) {
+	tprintf("\nbenchmarks: \n");
+	for (size_t i = 0; i < _benches.len; i++) {
+		group_t *group = _benches.groups + i;
+		const char *name = strcmp(group->name, "_") == 0
+			? "" : group->name;
+
+		if (i > 0) tprintf("\n");
+		group_foreach(group, bench_t, j) {
+			_print_padded(32, "%s %s", group->name, j->name);
+			tprintf("...");
+
+			bench_results_t res = _run_bench(j);
+
+			tprintf("\r");
+			_print_padded(32, "%s %s", group->name, j->name);
+			tprintf(" (%zu/%zu)    \n", j->iters, j->iters);
+			tprintf("overall:\t\t\tper iter:\n");
+			_print_time("usr: ", res.user);
+			_print_time("\t\tusr: ", res.user / (double)j->iters);
+			tprintf("\n");
+			_print_time("sys: ", res.sys);
+			_print_time("\t\tsys: ", res.sys / (double)j->iters);
+			tprintf("\n");
+		}
+	}
+
+	_nodes_free(&_benches);
+}
+
+static int _test_args_usage(char **argv) {
+	printf("usage:\n");
+	printf("%s options\n", argv[0]);
+	printf("\t-s,--silent\t\tdon't print test stdout\n");
+	printf("\t-S,--silent-errors\tdon't print test stdout or stderr\n");
+	printf("\t-B,--no-bench\t\tdon't run the benchmarks\n");
+	return 0;
 }
 
 int main(int argc, char **argv) {
 	for (int i = 1; i < argc; i++) {
-		_test_silent |= strcmp(argv[i], "-s") == 0;
-		_test_silent |= _test_silent_err |= strcmp(argv[i], "-se") == 0;
+		_test_silent |= strcmp(argv[i], "-s") == 0
+			| strcmp(argv[i], "--silent") == 0;
+		_test_silent |= _test_silent_err
+			|= strcmp(argv[i], "-S") == 0
+			| strcmp(argv[i], "-silence-errors") == 0;
+		_bench_disable |= strcmp(argv[i], "-B") == 0
+			| strcmp(argv[i], "--no-bench") == 0;
+		if (strcmp(argv[i], "-h") == 0
+			|| strcmp(argv[i], "--help") == 0) {
+			return _test_args_usage(argv);
+		}
 	}
 
-	return _run_tests() ? 0 : 1;
+	bool tests_result = _run_tests();
+	if (!_bench_disable) _run_benches();
+	_restore_stdout();
+	return tests_result ? 0 : 1;
 }
 
