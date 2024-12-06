@@ -1,6 +1,6 @@
 #pragma once
 #pragma GCC optimize(2)
-// ektest (version 1.0.1)
+// ektest (version 1.1.0)
 // Simple unit testing and benchmarking utility for C
 //
 // Using eklipsed's test.h:
@@ -17,7 +17,7 @@
 // - pass: pass test
 // - fail: fail test
 // - fail(fmt, ...): fail test with message
-// - log(fmt, ...): log message at line
+// - test_log(fmt, ...): log message at line
 // - bench((optional) group_name, bench_name, num_iters): define test
 // - repeat(iters, n_times): run benchmark iters times and then that n_times
 // - onsetup(state_type) {}: run code to setup benchmark with state
@@ -121,11 +121,10 @@
 // Creates a test in _group with _name
 #define _test_group(_group, _name)                                             \
 	/* Forward declare the test so we can add its function pointer */      \
-	static _test_fn _test_##_group##_##_name;                              \
+	static _test_fn		  _test_##_group##_##_name;                    \
 	static _test_autorun void _test_add_##_group##_##_name(void) {         \
 		_test_nodes_add(                                               \
-			&_test_tests,                                          \
-			#_group,                                               \
+			&_test_tests, #_group,                                 \
 			&(_test_t){                                            \
 				.fn = _test_##_group##_##_name,                \
 				.name = #_name,                                \
@@ -142,7 +141,7 @@
 #define test(...) _test_pick(__VA_ARGS__, _test_group, _test)(__VA_ARGS__)
 
 // Can be used in test or benchmark functions
-#define log(msg, ...)                                                          \
+#define test_log(msg, ...)                                                     \
 	(printf("\n[line %d]: " msg "\n", __LINE__, ##__VA_ARGS__))
 
 // Pass and fail macros
@@ -157,8 +156,7 @@
 #define _test_bench_group(_group, _name, _iters)                               \
 	static _test_autorun void _test_bench_add_##_group##_##_name(void) {   \
 		_test_bench_t *bench = _test_nodes_add(                        \
-			&_test_benches,                                        \
-			#_group,                                               \
+			&_test_benches, #_group,                               \
 			&(_test_bench_t){                                      \
 				.setup = NULL,                                 \
 				.cleanup = NULL,                               \
@@ -241,7 +239,7 @@ static void *_test_fail(const char *fmt, ...);
 
 // Structure used to defined tests
 typedef struct _test {
-	_test_fn *fn;
+	_test_fn   *fn;
 	const char *name; // Name of the test without "test" prefix
 } _test_t;
 
@@ -249,22 +247,21 @@ typedef struct _test {
 // either of them
 typedef struct _test_group {
 	const char *name;
-	void *nodes;
-	size_t len, capacity;
+	void	   *nodes;
+	size_t	    len, capacity;
 } _test_group_t;
 
 // Loops through each node in _group with _name (pointer to _type)
 #define _test_group_foreach(_group, _type, _name)                              \
 	for (_type *_name = (_group)->nodes;                                   \
-	     _name != ((_type *)(_group)->nodes) + (_group)->len;              \
-	     _name++)
+	     _name != ((_type *)(_group)->nodes) + (_group)->len; _name++)
 
 // A database of groups of something to run (tests, benchmarks)
 typedef struct _test_nodes {
 	_test_group_t *groups;
-	size_t len;
-	size_t nodesz;
-	size_t capacity;
+	size_t	       len;
+	size_t	       nodesz;
+	size_t	       capacity;
 } _test_nodes_t;
 
 // Benchmark function prototypes
@@ -274,13 +271,13 @@ typedef void(_test_bench_iter_fn)(void *test_state, size_t iter);
 
 // Structure used to defined benchmarks
 typedef struct _test_bench {
-	const char *name;
-	_test_bench_setup_fn *setup;
+	const char	       *name;
+	_test_bench_setup_fn   *setup;
 	_test_bench_cleanup_fn *cleanup;
-	_test_bench_iter_fn *iter;
-	size_t statesz;
-	uint64_t mult;	// How many times we bench on iter
-	uint64_t iters; // How many times iter should be called
+	_test_bench_iter_fn    *iter;
+	size_t			statesz;
+	uint64_t		mult;  // How many times we bench on iter
+	uint64_t		iters; // How many times iter should be called
 } _test_bench_t;
 
 // Used to set mult and iters in test_bench
@@ -293,18 +290,18 @@ typedef struct _test_bench_range {
 static _test_nodes_t _test_tests, _test_benches;
 
 // Used in benchmark macros to set the current benchmark's callbacks
-static _test_bench_setup_fn **_test_bench_setup;
+static _test_bench_setup_fn   **_test_bench_setup;
 static _test_bench_cleanup_fn **_test_bench_cleanup;
-static _test_bench_iter_fn **_test_bench_iter;
-static size_t *_test_bench_statesz;
+static _test_bench_iter_fn    **_test_bench_iter;
+static size_t		       *_test_bench_statesz;
 
 // Used to globally redirect stdout and stderr
 static FILE *_test_realout, *_test_stdout;
 
 // Command line flags
-static bool _test_silent;	  // Don't print test's stdout
-static bool _test_bench_disable;  // Don't run benchmarks
-static const char *_test_logfile; // Where to put test stdout to
+static bool	   _test_silent;	// Don't print test's stdout
+static bool	   _test_bench_disable; // Don't run benchmarks
+static const char *_test_logfile;	// Where to put test stdout to
 
 // Add a node (test, benchmark) to a nodes database
 static void *_test_nodes_add(
@@ -356,8 +353,7 @@ add:
 
 	// Set the node and return its address
 	memcpy((void *)((uintptr_t)group->nodes + group->len * nodes->nodesz),
-	       node,
-	       nodesz);
+	       node, nodesz);
 	return (void *)((uintptr_t)group->nodes + group->len++ * nodes->nodesz);
 }
 
@@ -384,8 +380,8 @@ static bool _test_run_test(const char *group, const _test_t *test) {
 
 	// Run the test
 	uint8_t *res = test->fn();
-	size_t failline = (uintptr_t)res - (uintptr_t)_test_fail;
-	bool passed = res == NULL;
+	size_t	 failline = (uintptr_t)res - (uintptr_t)_test_fail;
+	bool	 passed = res == NULL;
 
 	// Print new status
 	_testp("\r");
@@ -411,22 +407,16 @@ static void *_test_fail(const char *fmt, ...) {
 
 // Print pretty results of test suite
 static void _testpres(const char *name, size_t passed, size_t ran) {
-	_testp("%s %zu/%zu test%spassed (%zu%%)\n",
-	       name,
-	       passed,
-	       ran,
-	       passed == 1 ? " " : "s ",
-	       passed * 100 / ran);
+	_testp("%s %zu/%zu test%spassed (%zu%%)\n", name, passed, ran,
+	       passed == 1 ? " " : "s ", passed * 100 / ran);
 }
 
 // Run a group of tests.
 static void _test_run_test_group(
-	_test_group_t *group,
-	bool run_unnamed,
-	size_t *total_passed,
+	_test_group_t *group, bool run_unnamed, size_t *total_passed,
 	size_t *total_ran) {
 	const char *name = strcmp(group->name, "_") == 0 ? "" : group->name;
-	size_t npassed = 0;
+	size_t	    npassed = 0;
 
 	if (run_unnamed && name[0] != '\0') return;
 	if (!run_unnamed && name[0] == '\0') return;
@@ -451,9 +441,7 @@ static bool _test_run_tests(void) {
 		_testp("\n");
 		for (size_t j = 0; j < _test_tests.len; j++) {
 			_test_run_test_group(
-				_test_tests.groups + j,
-				i,
-				&total.npassed,
+				_test_tests.groups + j, i, &total.npassed,
 				&total.nran);
 		}
 	}
@@ -525,8 +513,8 @@ static void _test_run_benchmarks(void) {
 	_testp("\nbenchmarks: \n");
 	for (size_t i = 0; i < _test_benches.len; i++) {
 		_test_group_t *group = _test_benches.groups + i;
-		const char *name = strcmp(group->name, "_") == 0 ? ""
-								 : group->name;
+		const char    *name = strcmp(group->name, "_") == 0 ? ""
+								    : group->name;
 
 		// Put newline between each group
 		if (i > 0) _testp("\n");

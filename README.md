@@ -15,7 +15,7 @@ benchmark functions the only ones with optimizations.
 - ```pass``` pass test
 - ```fail``` fail test
 - ```fail(fmt, ...)``` fail test with message
-- ```log(fmt, ...)``` log message at line
+- ```test_log(fmt, ...)``` log message at line
 - ```bench((optional) group_name, bench_name, num_iters)``` define test
 - ```repeat(iters, n_times)``` run benchmark iters times and then that n_times
 - ```onsetup(state_type) {}``` run code to setup benchmark with state
@@ -37,24 +37,24 @@ test(always_passes) {
 }
 test(print_if_not_silent) {
 	// Will print what line the log output was on
-	log("I can make test output gross! But only if -s is NOT used!");
+	test_log("I can make test output gross! But only if -s is NOT used!");
 	pass;
 }
 test(always_fails) {
- // Will print what line the error occurred on
- fail;
+    // Will print what line the error occurred on
+    fail;
 }
 test(always_fails2) {
- fail("failed in file: %s", "example.c");
+    fail("failed in file: %s", "example.c");
 }
 
 test(math, 1) { // You can even name tests with just numbers!
- if (5 < 4) fail;
- pass;
+    if (5 < 4) fail;
+    pass;
 }
 test(math, 2) { // Tests get ran in the same order their defined.
- if (3 < 4) fail("happened after math_1");
- pass;
+    if (3 < 4) fail("happened after math_1");
+    pass;
 }
 
 bench(printf, 10000) oniter(void) {
